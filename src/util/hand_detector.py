@@ -1,6 +1,7 @@
 import os
 
 import numpy as np
+import cv2
 
 
 class HandDetector(object):
@@ -42,9 +43,12 @@ class HandDetector(object):
         self.fy = fy
         self.importer = importer
 
-    def com_from_bounds(self, com, size):
+    def bounds_from_com(self, com, size):
         """Calculates the boundaries of the crop given the crop size and center
         of mass.
+
+        The values are projected from image space to world space before adding
+        the bounding box. The value is then projected back to image space.
 
         Args:
             com: Center of Mass in mm
@@ -61,7 +65,46 @@ class HandDetector(object):
 
         zstart = com[2] - size[2] / 2.
         zend = com[2] + size[2] / 2.
+        xstart = int(np.floor((com[0] * com[2] / self.fx - size[0] / 2.) / com[2] * self.fx))
+        xend = int(np.floor((com[0] * com[2] / self.fx + size[0] / 2.) / com[2] * self.fx))
+        ystart = int(np.floor((com[1] * com[2] / self.fy - size[1] / 2.) / com[2] * self.fy))
+        yend = int(np.floor((com[1] * com[2] / self.fy + size[1] / 2.) / com[2] * self.fy))
+        return xstart, xend, ystart, yend, zstart, zend
 
+    def crop_img(self, img, xstart, xend, ystart, yend, zstart, zend, thresh_z=True):
+        """Crops the given image using the specified boundaries.
+
+        Args:
+            img: Input image
+            xstart: Starting value for x-axis bound
+            xend: Ending value for x-axis bound
+            ystart: Starting value for y-axis bound
+            yend: Ending value for y-axis bound
+            zstart: Starting value for z-axis bound
+            zend: Ending value for z-axis bound
+            thresh_z: Boolean to determine if z-values should be thresholded
+
+        Returns:
+            A cropped image.
+        """
+
+        if len(img.shape) == 2:
+            cropped_img = img[max(ystart, 0):min(img.shape[0], yend), max(xstart, 0):min(img.shape[1], xend)].copy()
+            # fill in pixels if crop is outside of image
+            cropped = np.pad(cropped_img, ((abs(ystart) - max(ystart, 0),
+                                            abs(yend) - min(yend, img.shape[0])),
+                                           (abs(xstart) - max(xstart, 0),
+                                            abs(xend) - min(xend, img.shape[1]))), mode='constant', constant_values=0)
+        else:
+            raise NotImplementedError()
+
+        if thresh_z is True:
+            near_values = np.bitwise_and(cropped_img < zstart, cropped_img != 0)
+            far_values = np.bitwise_and(cropped_img > zend, cropped_img != 0)
+            cropped_img[near_values] = zstart
+            cropped_img[far_values] = 0.
+
+        return cropped_img
 
     def crop_area_3d(self, com=None, size=(250, 250, 250), img_size=(128, 128)):
         """Performs a 3D crop of the hand.
@@ -90,3 +133,8 @@ class HandDetector(object):
         xstart, xend, ystart, yend, zstart, zend = self.bounds_from_com(com, size)
 
         cropped_img = self.crop_img(self.img, xstart, xend, ystart, yend, zstart, zend)
+
+        # resize to requested image size
+        cropped_img = cv2.resize(cropped_img, img_size, interpolation=cv2.INTER_NEAREST)
+
+        return cropped_img
